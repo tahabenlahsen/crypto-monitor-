@@ -6,11 +6,11 @@
 //+------------------------------------------------------------------+
 #property copyright "Advanced Gold EA"
 #property link      ""
-#property version   "3.12"
+#property version   "3.13"
 #property description "Multi-Strategy Expert Advisor for Gold (XAUUSD)"
-#property description "Combines EMA Crossover, RSI, Bollinger Bands & Intraday Momentum"
-#property description "with proprietary Signal Quality Scoring & Adaptive Risk"
-#property description "Exits ride the trailing stop (no fixed TP) to let winners run"
+#property description "EMA / RSI / Bollinger / Momentum + Signal Quality Scoring"
+#property description "Trailing-stop exits (no fixed TP), HTF trend filter, ATR trailing,"
+#property description "spread & news guards, working portfolio-risk and daily limits"
 
 //+------------------------------------------------------------------+
 //| INPUT PARAMETERS (Customizable by user in MT5)                 |
@@ -21,26 +21,40 @@ input string   sys1 = "═════════ SYSTEM SETTINGS ════�
 input ulong    MagicNumber = 202411;                                // EA Magic Number
 input bool     TradeLong = true;                                    // Allow Long (BUY) Trades
 input bool     TradeShort = true;                                   // Allow Short (SELL) Trades
-input int      MaxConcurrentTrades = 200000;                             // Max Simultaneous Positions
-input bool     UseTimeFilter = false;                                // Restrict Trading Hours
+input int      MaxConcurrentTrades = 2;                             // Max Simultaneous Positions
+input bool     UseTimeFilter = false;                               // Restrict Trading Hours
 input int      StartHour = 8;                                       // Trading Start Hour (Broker Time)
 input int      EndHour = 20;                                        // Trading End Hour (Broker Time)
 
 //--- Risk Management
 input string   risk1 = "══════════ RISK MANAGEMENT ══════════";     // --- RISK MANAGEMENT ---
-input double   RiskPerTrade = 4.5;                                  // Risk % per Trade (0.5-2.0)
+input double   RiskPerTrade = 1.0;                                  // Risk % per Trade (0.5-2.0)
 input double   MaxDailyDrawdown = 5.0;                              // Max Daily Drawdown %
-input double   MaxTotalRisk = 10.0;                                 // Max Concurrent Portfolio Risk %
-input int      MaxDailyTrades = 2000000000;                                  // Max Trades Per Day
+input double   MaxTotalRisk = 6.0;                                  // Max Concurrent Portfolio Risk %
+input double   DailyProfitTargetPct = 5.0;                          // Daily Profit Target % (0 = disabled)
+input int      MaxDailyTrades = 10;                                 // Max Trades Per Day
+input int      MaxSpreadPoints = 50;                                // Max allowed spread (points) to enter
 input bool     UseBreakeven = true;                                 // Auto-Breakeven at X pips
 input int      BreakevenTrigger = 15;                               // Breakeven trigger points (10-20)
 input bool     UseTrailingStop = true;                              // Enable Trailing Stop
 input int      TrailingStart = 40;                                  // Trailing start points (20-40)
-input int      TrailingStep = 30;                                   // Trailing step points (10-20)
+input int      TrailingStep = 30;                                   // Trailing step points (fixed-mode)
 input bool     UsePartialClose = false;                             // Enable Partial Profit Taking (OFF = keep full size)
 input double   PartialClosePercent = 50.0;                          // % to close at 1st TP
-input double   RiskRewardRatio = 2.5;
-input double   SL_ATR_Multiplier = 0.3;        // NEW: very tight stop (0.3 x ATR)                              // Risk:Reward Ratio (1.5-2.5)
+input double   RiskRewardRatio = 2.5;                               // Risk:Reward Ratio (unused: TP is trailing-only)
+input double   SL_ATR_Multiplier = 1.2;                             // Initial Stop = this x ATR
+
+//--- Strength Filters (NEW)
+input string   filt1 = "══════════ STRENGTH FILTERS ══════════";    // --- STRENGTH FILTERS ---
+input bool     EnableTrendFilter = true;                            // Only trade WITH higher-timeframe trend
+input ENUM_TIMEFRAMES TrendTimeframe = PERIOD_H1;                   // Trend Filter Timeframe
+input int      TrendMAPeriod = 200;                                 // Trend Filter EMA Period
+input bool     OneTradePerDirection = true;                         // Block stacking same-direction trades
+input bool     UseATRTrailing = true;                               // Trail by ATR (adapts to volatility)
+input double   TrailATRMultiplier = 1.5;                            // Trailing distance = this x ATR
+input bool     EnableNewsFilter = false;                            // Pause around high-impact USD news
+input int      NewsMinutesBefore = 30;                              // Pause minutes BEFORE news
+input int      NewsMinutesAfter = 30;                               // Pause minutes AFTER news
 
 //--- Strategy Selection & Quality
 input string   strat1 = "══════════ STRATEGY SETUP ══════════";     // --- STRATEGY SETUP ---
@@ -74,28 +88,15 @@ double g_atrValue = 0;
 double g_dailyDrawdown = 0;
 int g_tradesToday = 0;
 datetime g_lastReset = 0;
-double g_initialBalance = 0;
+double g_initialBalance = 0;   // balance at start of the trading day
 double g_highestEquity = 0;
+bool g_tradingHalted = false;  // set true when a daily limit/target is hit
 
 //--- Strategy Signal Scoring
 struct SignalData {
    double quality;     // Signal quality score (0-100)
    int direction;      // 1 = BUY, -1 = SELL, 0 = NEUTRAL
 };
-
-//--- Trade Structure
-struct TradeInfo {
-   ulong ticket;
-   double openPrice;
-   double sl;
-   double tp;
-   double lots;
-   datetime openTime;
-   int strategyID;
-};
-
-TradeInfo activeTrades[];
-int g_totalActiveTrades = 0;
 
 //--- Indicator Handles
 int handle_EMA_Fast;
@@ -104,14 +105,15 @@ int handle_RSI;
 int handle_BB;
 int handle_ADX;
 int handle_ATR;
+int handle_TrendMA;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit() {
    //--- Validate inputs
-   if(RiskPerTrade < 0.5 || RiskPerTrade > 5.0) {
-      Print("WARNING: RiskPerTrade should be between 0.5 and 5.0");
+   if(RiskPerTrade < 0.1 || RiskPerTrade > 5.0) {
+      Print("WARNING: RiskPerTrade should be between 0.1 and 5.0");
       return(INIT_PARAMETERS_INCORRECT);
    }
 
@@ -122,10 +124,12 @@ int OnInit() {
    handle_BB = iBands(_Symbol, PERIOD_M5, BB_Period, BB_Deviation, 0, PRICE_CLOSE);
    handle_ADX = iADX(_Symbol, PERIOD_M5, ADXPeriod);
    handle_ATR = iATR(_Symbol, PERIOD_M5, ATRPeriod);
+   handle_TrendMA = iMA(_Symbol, TrendTimeframe, TrendMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
 
    if(handle_EMA_Fast == INVALID_HANDLE || handle_EMA_Slow == INVALID_HANDLE ||
       handle_RSI == INVALID_HANDLE || handle_BB == INVALID_HANDLE ||
-      handle_ADX == INVALID_HANDLE || handle_ATR == INVALID_HANDLE) {
+      handle_ADX == INVALID_HANDLE || handle_ATR == INVALID_HANDLE ||
+      handle_TrendMA == INVALID_HANDLE) {
       Print("Error creating indicator handles. Check input parameters.");
       return(INIT_FAILED);
    }
@@ -134,6 +138,7 @@ int OnInit() {
    g_initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_highestEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    g_tradesToday = 0;
+   g_tradingHalted = false;
    g_lastReset = iTime(_Symbol, PERIOD_D1, 0);
    g_atrValue = CalculateATRValue();
 
@@ -157,6 +162,7 @@ void OnDeinit(const int reason) {
    if(handle_BB != INVALID_HANDLE) IndicatorRelease(handle_BB);
    if(handle_ADX != INVALID_HANDLE) IndicatorRelease(handle_ADX);
    if(handle_ATR != INVALID_HANDLE) IndicatorRelease(handle_ATR);
+   if(handle_TrendMA != INVALID_HANDLE) IndicatorRelease(handle_TrendMA);
    Print("Gold Multi-Strategy EA deinitialized.");
 }
 
@@ -175,14 +181,20 @@ void OnTick() {
       atrUpdateCounter = 0;
    }
 
-   //--- Check risk limits before trading
+   //--- Manage open trades on every tick (trailing/breakeven/partial)
+   ManageActiveTrades();
+
+   //--- Check risk limits before opening anything new
    if(!CheckRiskLimits()) return;
 
-   //--- Check time filter if enabled
+   //--- Time filter
    if(UseTimeFilter && !IsWithinTradingHours()) return;
 
-   //--- Update active trades management (trailing/breakeven/partial)
-   ManageActiveTrades();
+   //--- News filter (pause around high-impact events)
+   if(EnableNewsFilter && IsNewsTime()) {
+      if(DebugMode) Print("News filter active - skipping new trades");
+      return;
+   }
 
    //--- Early exit if no new bar
    static datetime lastBarTime = 0;
@@ -205,6 +217,7 @@ void OnTick() {
    ArraySetAsSeries(adxValue, true);
    ArraySetAsSeries(adxPlus, true);
    ArraySetAsSeries(adxMinus, true);
+   ArraySetAsSeries(atrValue, true);
 
    if(CopyBuffer(handle_EMA_Fast, 0, 0, 3, emaFast) < 3 ||
       CopyBuffer(handle_EMA_Slow, 0, 0, 3, emaSlow) < 3 ||
@@ -228,7 +241,14 @@ void OnTick() {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double spread = ask - bid;
+   double spreadPoints = spread / _Point;
    double minStopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+
+   //--- Hard spread guard (FIXED: this actually blocks now)
+   if(spreadPoints > MaxSpreadPoints) {
+      if(DebugMode) Print("Spread too high: ", spreadPoints, " > ", MaxSpreadPoints);
+      return;
+   }
 
    //--- Evaluate all four strategies in parallel
    SignalData signal;
@@ -296,12 +316,28 @@ void OnTick() {
 
    //--- Execute trade if quality threshold met
    if(signal.direction != 0 && signal.quality >= MinSignalQuality) {
+
+      //--- Respect long/short permissions (FIXED: these were ignored before)
+      if(signal.direction == 1 && !TradeLong)  { if(DebugMode) Print("Longs disabled"); return; }
+      if(signal.direction == -1 && !TradeShort) { if(DebugMode) Print("Shorts disabled"); return; }
+
+      //--- Higher-timeframe trend filter (NEW)
+      if(EnableTrendFilter && !TrendAllows(signal.direction)) {
+         if(DebugMode) Print("Trend filter blocked direction ", signal.direction);
+         return;
+      }
+
+      //--- One trade per direction (NEW): don't stack same-direction trades
+      if(OneTradePerDirection && CountPositionsByDirection(signal.direction) > 0) {
+         if(DebugMode) Print("Already have a position in direction ", signal.direction);
+         return;
+      }
+
       double entryPrice = (signal.direction == 1) ? ask : bid;
-      double slDistancePoints = g_atrValue / _Point * 1.2;  // ATR-based SL in points (used for risk/lot sizing)
+      double slDistancePoints = g_atrValue / _Point * SL_ATR_Multiplier;  // ATR-based SL (FIXED: now uses SL_ATR_Multiplier)
 
       double sl = (signal.direction == 1) ? entryPrice - (slDistancePoints * _Point) : entryPrice + (slDistancePoints * _Point);
       // No fixed take-profit: the trade rides the trailing stop so winners can run for bigger profit.
-      // The position is only closed when the trailing stop (which follows the price) is hit.
       double tp = 0.0;
 
       //--- Validate stop levels
@@ -311,14 +347,9 @@ void OnTick() {
          return;
       }
 
-      double lots = CalculateLotSize(slDistancePoints);  // Pass points now
+      double lots = CalculateLotSize(slDistancePoints);
+      ExecuteTrade(signal.direction, lots, sl, tp);
 
-      //--- Check spread before trading
-      if(spread < SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point * 1.5 || !UseTimeFilter) {
-         ExecuteTrade(signal.direction, lots, sl, tp);
-      } else if(DebugMode) {
-         Print("Spread too high: ", spread/_Point, " points");
-      }
    } else if(DebugMode && signal.direction != 0) {
       Print("Signal quality too low: ", signal.quality, " < ", MinSignalQuality);
    }
@@ -411,6 +442,52 @@ SignalData EvaluateIntradayMomentum(double &adxPlus[], double &adxMinus[], doubl
 }
 
 //+------------------------------------------------------------------+
+//| FILTERS & HELPERS                                                |
+//+------------------------------------------------------------------+
+
+//--- Higher-timeframe trend filter: only allow trades WITH the HTF trend
+bool TrendAllows(int direction) {
+   double tm[];
+   ArraySetAsSeries(tm, true);
+   if(CopyBuffer(handle_TrendMA, 0, 0, 2, tm) < 2) return true;  // missing data -> don't block
+   double closeHTF = iClose(_Symbol, TrendTimeframe, 0);
+   if(direction == 1)  return (closeHTF > tm[0] && tm[0] >= tm[1]);   // uptrend
+   if(direction == -1) return (closeHTF < tm[0] && tm[0] <= tm[1]);   // downtrend
+   return false;
+}
+
+//--- Count EA's open positions in a given direction (1=BUY, -1=SELL)
+int CountPositionsByDirection(int direction) {
+   long wanted = (direction == 1) ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket)) {
+         if(PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+            PositionGetInteger(POSITION_TYPE) == wanted) count++;
+      }
+   }
+   return count;
+}
+
+//--- News filter: pause around high-impact USD events (live/real-time only; tester returns none)
+bool IsNewsTime() {
+   datetime now  = TimeTradeServer();
+   datetime from = now - NewsMinutesBefore * 60;
+   datetime to   = now + NewsMinutesAfter * 60;
+
+   MqlCalendarValue values[];
+   int n = CalendarValueHistory(values, from, to, NULL, "USD");
+   for(int i = 0; i < n; i++) {
+      MqlCalendarEvent event;
+      if(CalendarEventById(values[i].event_id, event)) {
+         if(event.importance == CALENDAR_IMPORTANCE_HIGH) return true;
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //| RISK MANAGEMENT & TRADE EXECUTION FUNCTIONS                    |
 //+------------------------------------------------------------------+
 
@@ -419,14 +496,21 @@ void DailyResetCheck() {
    if(currentDay != g_lastReset) {
       g_tradesToday = 0;
       g_dailyDrawdown = 0;
+      g_tradingHalted = false;
       g_lastReset = currentDay;
       g_initialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
       g_highestEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-      if(DebugMode) Print("Daily reset: new day, trades today reset to 0");
+      if(DebugMode) Print("Daily reset: new day, counters reset");
    }
 }
 
 bool CheckRiskLimits() {
+   //--- Already halted for the day?
+   if(g_tradingHalted) {
+      if(DebugMode) Print("Trading halted for today (daily limit/target reached)");
+      return false;
+   }
+
    if(g_tradesToday >= MaxDailyTrades) {
       if(DebugMode) Print("Daily trade limit reached: ", g_tradesToday);
       return false;
@@ -437,25 +521,59 @@ bool CheckRiskLimits() {
    }
 
    double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double drawdownPct = (g_highestEquity - currentEquity) / g_highestEquity * 100;
-   if(drawdownPct > MaxDailyDrawdown) {
-      if(DebugMode) Print("Max daily drawdown reached: ", drawdownPct, "%");
-      return false;
-   }
    if(currentEquity > g_highestEquity) g_highestEquity = currentEquity;
 
-   double totalRisk = 0;
-   for(int i = 0; i < g_totalActiveTrades; i++) {
-      if(activeTrades[i].openPrice > 0) {
-         double risk = MathAbs(activeTrades[i].openPrice - activeTrades[i].sl) * activeTrades[i].lots;
-         totalRisk += risk / AccountInfoDouble(ACCOUNT_BALANCE) * 100;
+   //--- Trailing daily drawdown from equity peak -> hard halt for the day
+   double drawdownPct = (g_highestEquity - currentEquity) / g_highestEquity * 100;
+   if(drawdownPct > MaxDailyDrawdown) {
+      g_tradingHalted = true;
+      Print("HALT: Max daily drawdown reached: ", drawdownPct, "%");
+      return false;
+   }
+
+   //--- Daily profit target -> lock in the day
+   if(DailyProfitTargetPct > 0 && g_initialBalance > 0) {
+      double dayPLpct = (currentEquity - g_initialBalance) / g_initialBalance * 100;
+      if(dayPLpct >= DailyProfitTargetPct) {
+         g_tradingHalted = true;
+         Print("HALT: Daily profit target reached: ", dayPLpct, "%");
+         return false;
       }
    }
-   if(totalRisk > MaxTotalRisk) {
-      if(DebugMode) Print("Portfolio risk limit exceeded: ", totalRisk, "%");
+
+   //--- Working portfolio-risk cap (FIXED: now sums REAL open positions by magic number)
+   double openRisk = CalculateOpenRiskPercent();
+   if(openRisk > MaxTotalRisk) {
+      if(DebugMode) Print("Portfolio risk limit exceeded: ", openRisk, "% > ", MaxTotalRisk, "%");
       return false;
    }
    return true;
+}
+
+//--- Sum the % of balance at risk across all EA positions (distance to SL x value x lots)
+double CalculateOpenRiskPercent() {
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(balance <= 0) return 0;
+
+   double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double valuePerPointPerLot = (tickSize > 0) ? contractSize * tickSize : 0;
+
+   double totalRisk = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket) && PositionGetInteger(POSITION_MAGIC) == MagicNumber) {
+         double op  = PositionGetDouble(POSITION_PRICE_OPEN);
+         double psl = PositionGetDouble(POSITION_SL);
+         double vol = PositionGetDouble(POSITION_VOLUME);
+         if(psl > 0) {
+            double riskPoints = MathAbs(op - psl) / _Point;
+            double riskMoney = riskPoints * valuePerPointPerLot * vol;
+            totalRisk += riskMoney / balance * 100.0;
+         }
+      }
+   }
+   return totalRisk;
 }
 
 double CalculateATRValue() {
@@ -478,6 +596,7 @@ double CalculateLotSize(double slDistancePoints) {
 
    // 3. Total loss if stop is hit for 1 lot
    double lossIfStopForOneLot = slDistancePoints * manualTickValue;
+   if(lossIfStopForOneLot <= 0) return SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
 
    // 4. Ideal lot size based on risk
    double lots = riskAmount / lossIfStopForOneLot;
@@ -555,48 +674,46 @@ int CountOpenPositions() {
 //+------------------------------------------------------------------+
 void ManageActiveTrades() {
    double breakevenBuffer = 5 * _Point;
+   //--- Trailing distance: ATR-based (adapts to volatility) or fixed points
+   double trailDist = UseATRTrailing ? (g_atrValue * TrailATRMultiplier) : (TrailingStep * _Point);
+
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket > 0 && PositionSelectByTicket(ticket)) {
          if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
 
+         bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
          double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
          double currentSL = PositionGetDouble(POSITION_SL);
          double currentTP = PositionGetDouble(POSITION_TP);
-         double currentPrice = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ?
-                               SymbolInfoDouble(_Symbol, SYMBOL_BID) :
-                               SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         double profitPoints = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ?
-                               (currentPrice - openPrice) / _Point :
-                               (openPrice - currentPrice) / _Point;
+         double currentPrice = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_BID) :
+                                       SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double profitPoints = isBuy ? (currentPrice - openPrice) / _Point :
+                                       (openPrice - currentPrice) / _Point;
 
-         //--- Move stop to breakeven once the trade is in profit (locks the trade, never closes it early)
+         //--- Move stop to breakeven once in profit (locks the trade, never closes it early)
          if(UseBreakeven && profitPoints >= BreakevenTrigger) {
-            double newSL = openPrice + (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ?
-                          breakevenBuffer : -breakevenBuffer);
-            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
-               if(currentSL < newSL) { ModifyPosition(ticket, newSL, currentTP); currentSL = newSL; }
+            double beSL = openPrice + (isBuy ? breakevenBuffer : -breakevenBuffer);
+            if(isBuy) {
+               if(currentSL < beSL) { ModifyPosition(ticket, beSL, currentTP); currentSL = beSL; }
             } else {
-               if(currentSL == 0 || currentSL > newSL) { ModifyPosition(ticket, newSL, currentTP); currentSL = newSL; }
+               if(currentSL == 0 || currentSL > beSL) { ModifyPosition(ticket, beSL, currentTP); currentSL = beSL; }
             }
-            if(DebugMode) Print("Breakeven set for ticket ", ticket);
          }
 
-         //--- Trailing stop: follows the price so profit keeps locking in as the trend runs.
-         //--- The SL only ever moves in the trade's favour, so the position is never closed early.
+         //--- Trailing stop: follows price, only ever moves in the trade's favour
          if(UseTrailingStop && profitPoints >= TrailingStart) {
-            double newSL = 0;
-            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) {
-               newSL = currentPrice - (TrailingStep * _Point);
+            double newSL;
+            if(isBuy) {
+               newSL = currentPrice - trailDist;
                if(newSL > currentSL) ModifyPosition(ticket, newSL, currentTP);
             } else {
-               newSL = currentPrice + (TrailingStep * _Point);
+               newSL = currentPrice + trailDist;
                if(newSL < currentSL || currentSL == 0) ModifyPosition(ticket, newSL, currentTP);
             }
          }
 
-         //--- Partial close is OFF by default (UsePartialClose=false) so the full size stays open
-         //--- and rides the trailing stop for the largest possible profit.
+         //--- Partial close OFF by default so the full size rides the trailing stop
          if(UsePartialClose && profitPoints >= (TrailingStart * 1.5) &&
             PositionGetDouble(POSITION_VOLUME) > SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN)) {
             double currentVolume = PositionGetDouble(POSITION_VOLUME);
@@ -612,8 +729,8 @@ void ModifyPosition(ulong ticket, double newSL, double newTP) {
    MqlTradeResult result = {};
    request.action = TRADE_ACTION_SLTP;
    request.position = ticket;
-   request.sl = newSL;
-   request.tp = newTP;
+   request.sl = NormalizeDouble(newSL, _Digits);
+   request.tp = NormalizeDouble(newTP, _Digits);
    if(!OrderSend(request, result)) {
       Print("SL/TP modification failed: ", result.retcode);
    }
@@ -624,10 +741,16 @@ void ClosePartialPosition(ulong ticket, double volume) {
    MqlTradeResult result = {};
    request.action = TRADE_ACTION_DEAL;
    request.symbol = _Symbol;
-   request.volume = volume;
    request.deviation = 10;
    request.position = ticket;
    if(PositionSelectByTicket(ticket)) {
+      //--- Normalize partial volume to broker constraints
+      double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      volume = MathFloor(volume / lotStep) * lotStep;
+      if(volume < minLot) return;
+      request.volume = volume;
+
       request.type = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ?
                      ORDER_TYPE_SELL : ORDER_TYPE_BUY;
       request.price = (request.type == ORDER_TYPE_BUY) ?
