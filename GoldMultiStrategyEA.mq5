@@ -80,6 +80,7 @@ input int      ATRPeriod = 14;                                      // ATR Perio
 
 //--- Debug mode (prints signal details)
 input bool     DebugMode = true;                                    // Enable debug prints in Experts tab
+input bool     DiagnosticMode = false;                              // TEST ONLY: loosen all filters to confirm trading
 
 //+------------------------------------------------------------------+
 //| GLOBAL VARIABLES                                                |
@@ -91,6 +92,13 @@ datetime g_lastReset = 0;
 double g_initialBalance = 0;   // balance at start of the trading day
 double g_highestEquity = 0;
 bool g_tradingHalted = false;  // set true when a daily limit/target is hit
+
+//--- Effective filter settings (loosened when DiagnosticMode is ON)
+bool   eff_EnableTrendFilter;
+bool   eff_EnableNewsFilter;
+double eff_MinSignalQuality;
+int    eff_ADXThreshold;
+int    eff_MaxSpreadPoints;
 
 //--- Strategy Signal Scoring
 struct SignalData {
@@ -142,6 +150,22 @@ int OnInit() {
    g_lastReset = iTime(_Symbol, PERIOD_D1, 0);
    g_atrValue = CalculateATRValue();
 
+   //--- Set effective filter values (DiagnosticMode loosens everything for testing)
+   if(DiagnosticMode) {
+      eff_EnableTrendFilter = false;
+      eff_EnableNewsFilter  = false;
+      eff_MinSignalQuality  = 0;
+      eff_ADXThreshold      = 1;
+      eff_MaxSpreadPoints   = 1000000;
+      Print(">>> DIAGNOSTIC MODE ON: filters loosened to verify the EA can trade. Turn OFF for real use. <<<");
+   } else {
+      eff_EnableTrendFilter = EnableTrendFilter;
+      eff_EnableNewsFilter  = EnableNewsFilter;
+      eff_MinSignalQuality  = MinSignalQuality;
+      eff_ADXThreshold      = ADXThreshold;
+      eff_MaxSpreadPoints   = MaxSpreadPoints;
+   }
+
    //--- Print broker symbol info for debugging
    PrintSymbolInfo();
 
@@ -191,7 +215,7 @@ void OnTick() {
    if(UseTimeFilter && !IsWithinTradingHours()) return;
 
    //--- News filter (pause around high-impact events)
-   if(EnableNewsFilter && IsNewsTime()) {
+   if(eff_EnableNewsFilter && IsNewsTime()) {
       if(DebugMode) Print("News filter active - skipping new trades");
       return;
    }
@@ -222,8 +246,8 @@ void OnTick() {
    if(CopyBuffer(handle_EMA_Fast, 0, 0, 3, emaFast) < 3 ||
       CopyBuffer(handle_EMA_Slow, 0, 0, 3, emaSlow) < 3 ||
       CopyBuffer(handle_RSI, 0, 0, 3, rsiValue) < 3 ||
-      CopyBuffer(handle_BB, 1, 0, 3, bbLower) < 3 ||
-      CopyBuffer(handle_BB, 2, 0, 3, bbUpper) < 3 ||
+      CopyBuffer(handle_BB, 1, 0, 3, bbUpper) < 3 ||  // FIXED: buffer 1 = UPPER band
+      CopyBuffer(handle_BB, 2, 0, 3, bbLower) < 3 ||  // FIXED: buffer 2 = LOWER band
       CopyBuffer(handle_ADX, 0, 0, 3, adxValue) < 3 ||
       CopyBuffer(handle_ADX, 1, 0, 3, adxPlus) < 3 ||
       CopyBuffer(handle_ADX, 2, 0, 3, adxMinus) < 3 ||
@@ -232,8 +256,8 @@ void OnTick() {
    }
 
    //--- Check for ADX trend strength (minimum threshold)
-   if(adxValue[1] < ADXThreshold) {
-      if(DebugMode) Print("ADX too low: ", adxValue[1], " < ", ADXThreshold);
+   if(adxValue[1] < eff_ADXThreshold) {
+      if(DebugMode) Print("ADX too low: ", adxValue[1], " < ", eff_ADXThreshold);
       return;
    }
 
@@ -245,8 +269,8 @@ void OnTick() {
    double minStopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
 
    //--- Hard spread guard (FIXED: this actually blocks now)
-   if(spreadPoints > MaxSpreadPoints) {
-      if(DebugMode) Print("Spread too high: ", spreadPoints, " > ", MaxSpreadPoints);
+   if(spreadPoints > eff_MaxSpreadPoints) {
+      if(DebugMode) Print("Spread too high: ", spreadPoints, " > ", eff_MaxSpreadPoints);
       return;
    }
 
@@ -315,14 +339,14 @@ void OnTick() {
    }
 
    //--- Execute trade if quality threshold met
-   if(signal.direction != 0 && signal.quality >= MinSignalQuality) {
+   if(signal.direction != 0 && signal.quality >= eff_MinSignalQuality) {
 
       //--- Respect long/short permissions (FIXED: these were ignored before)
       if(signal.direction == 1 && !TradeLong)  { if(DebugMode) Print("Longs disabled"); return; }
       if(signal.direction == -1 && !TradeShort) { if(DebugMode) Print("Shorts disabled"); return; }
 
       //--- Higher-timeframe trend filter (NEW)
-      if(EnableTrendFilter && !TrendAllows(signal.direction)) {
+      if(eff_EnableTrendFilter && !TrendAllows(signal.direction)) {
          if(DebugMode) Print("Trend filter blocked direction ", signal.direction);
          return;
       }
@@ -351,7 +375,7 @@ void OnTick() {
       ExecuteTrade(signal.direction, lots, sl, tp);
 
    } else if(DebugMode && signal.direction != 0) {
-      Print("Signal quality too low: ", signal.quality, " < ", MinSignalQuality);
+      Print("Signal quality too low: ", signal.quality, " < ", eff_MinSignalQuality);
    }
 }
 
