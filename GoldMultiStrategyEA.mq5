@@ -129,7 +129,7 @@ int OnInit() {
    handle_EMA_Fast = iMA(_Symbol, PERIOD_M5, FastMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
    handle_EMA_Slow = iMA(_Symbol, PERIOD_M5, SlowMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
    handle_RSI = iRSI(_Symbol, PERIOD_M5, RSI_Period, PRICE_CLOSE);
-   handle_BB = iBands(_Symbol, PERIOD_M5, BB_Period, BB_Deviation, 0, PRICE_CLOSE);
+   handle_BB = iBands(_Symbol, PERIOD_M5, BB_Period, 0, BB_Deviation, PRICE_CLOSE);  // FIXED: correct arg order (shift=0, deviation=BB_Deviation)
    handle_ADX = iADX(_Symbol, PERIOD_M5, ADXPeriod);
    handle_ATR = iATR(_Symbol, PERIOD_M5, ATRPeriod);
    handle_TrendMA = iMA(_Symbol, TrendTimeframe, TrendMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
