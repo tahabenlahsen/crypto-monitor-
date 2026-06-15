@@ -49,6 +49,7 @@ input string  set1 = "════════ SETUP / CRT ═══════
 input int     RangeLookback     = 20;                   // Bars used for liquidity pools
 input int     MinSweepPoints    = 0;                    // Min wick penetration beyond pool (points)
 input bool    RequireConfirmCandle = true;              // Sweep candle must close in reversal dir
+input bool    AggressiveEntry   = false;                // Enter at MARKET on sweep (no retrace wait)
 input double  EntryRetracePercent  = 50.0;              // OTE retrace into sweep candle (%)
 input int     SetupExpiryBars   = 6;                    // Cancel setup if no entry within N bars
 
@@ -74,6 +75,11 @@ datetime g_lastBar      = 0;
 datetime g_lastReset    = 0;
 int      g_tradesToday  = 0;
 
+//--- effective settings (loosened by DiagnosticMode)
+bool     eff_RequireConfirm;
+bool     eff_Aggressive;
+int      eff_MaxSpread;
+
 //--- pending setup (one at a time)
 bool     g_setupActive   = false;
 int      g_setupDir      = 0;       // 1 = buy, -1 = sell
@@ -94,6 +100,18 @@ int OnInit() {
 
    g_lastReset = iTime(_Symbol, PERIOD_D1, 0);
    g_tradesToday = 0;
+
+   //--- Effective settings (DiagnosticMode forces frequent trades to verify the engine)
+   eff_RequireConfirm = RequireConfirmCandle;
+   eff_Aggressive     = AggressiveEntry;
+   eff_MaxSpread      = MaxSpreadPoints;
+   if(DiagnosticMode) {
+      eff_RequireConfirm = false;     // skip confirmation candle
+      eff_Aggressive     = true;      // enter at market on every sweep
+      eff_MaxSpread      = 1000000;   // ignore spread
+      Print(">>> DIAGNOSTIC MODE: kill zone OFF, confirmation OFF, market entry ON. Turn OFF for real use. <<<");
+   }
+
    Print("ICT/CRT Scalper initialized. DiagnosticMode=", DiagnosticMode);
    return(INIT_SUCCEEDED);
 }
@@ -153,21 +171,31 @@ void ScanForSetup() {
 
    //--- Bullish setup: swept the low and closed back above it
    bool bullSweep = (l1 < rangeLow - buf) && (c1 > rangeLow);
-   if(RequireConfirmCandle) bullSweep = bullSweep && (c1 > o1);   // bullish close
+   if(eff_RequireConfirm) bullSweep = bullSweep && (c1 > o1);   // bullish close
 
    //--- Bearish setup: swept the high and closed back below it
    bool bearSweep = (h1 > rangeHigh + buf) && (c1 < rangeHigh);
-   if(RequireConfirmCandle) bearSweep = bearSweep && (c1 < o1);   // bearish close
+   if(eff_RequireConfirm) bearSweep = bearSweep && (c1 < o1);   // bearish close
 
    if(bullSweep) {
-      double mid = l1 + (h1 - l1) * (EntryRetracePercent / 100.0);  // OTE / discount
-      ArmSetup(1, mid, l1, l1 - SL_BufferPoints * _Point, rangeHigh);
-      if(DebugMode) Print("BULL sweep armed: zone[", g_zoneBottom, " - ", g_zoneTop, "] stop=", g_setupStop, " targetLiq=", rangeHigh);
+      double stop = l1 - SL_BufferPoints * _Point;          // below the swept wick
+      if(eff_Aggressive) {
+         OpenTrade(1, stop, rangeHigh);                     // market entry now
+      } else {
+         double mid = l1 + (h1 - l1) * (EntryRetracePercent / 100.0);  // OTE / discount
+         ArmSetup(1, mid, l1, stop, rangeHigh);             // wait for retrace
+         if(DebugMode) Print("BULL sweep armed: zone[", g_zoneBottom, " - ", g_zoneTop, "] stop=", stop, " targetLiq=", rangeHigh);
+      }
    }
    else if(bearSweep) {
-      double mid = h1 - (h1 - l1) * (EntryRetracePercent / 100.0);  // OTE / premium
-      ArmSetup(-1, h1, mid, h1 + SL_BufferPoints * _Point, rangeLow);
-      if(DebugMode) Print("BEAR sweep armed: zone[", g_zoneBottom, " - ", g_zoneTop, "] stop=", g_setupStop, " targetLiq=", rangeLow);
+      double stop = h1 + SL_BufferPoints * _Point;          // above the swept wick
+      if(eff_Aggressive) {
+         OpenTrade(-1, stop, rangeLow);
+      } else {
+         double mid = h1 - (h1 - l1) * (EntryRetracePercent / 100.0);  // OTE / premium
+         ArmSetup(-1, h1, mid, stop, rangeLow);
+         if(DebugMode) Print("BEAR sweep armed: zone[", g_zoneBottom, " - ", g_zoneTop, "] stop=", stop, " targetLiq=", rangeLow);
+      }
    }
 }
 
@@ -190,7 +218,7 @@ void CheckEntryTrigger() {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double spreadPts = (ask - bid) / _Point;
-   if(spreadPts > MaxSpreadPoints) return;
+   if(spreadPts > eff_MaxSpread) return;
 
    if(g_setupDir == 1) {
       //--- Invalidate if price broke below the swept wick (structure failed)
@@ -218,12 +246,18 @@ void OpenTrade(int dir, double stop, double targetLiq) {
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double entry = (dir == 1) ? ask : bid;
 
+   //--- Spread gate
+   double spreadPts = (ask - bid) / _Point;
+   if(spreadPts > eff_MaxSpread) { if(DebugMode) Print("Spread too high, skip: ", spreadPts); return; }
+
+   //--- SAFETY: force the stop onto the correct side of the ACTUAL entry price
+   //--- (a market entry can move past the wick, which would put the SL on the wrong side)
+   double minStopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
+   double minDist = MathMax(minStopLevel + _Point, SL_BufferPoints * _Point);
+   if(dir == 1  && stop > entry - minDist) stop = entry - minDist;   // buy stop must be BELOW entry
+   if(dir == -1 && stop < entry + minDist) stop = entry + minDist;   // sell stop must be ABOVE entry
+
    double stopDistPoints = MathAbs(entry - stop) / _Point;
-   double minStop = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
-   if(MathAbs(entry - stop) < minStop) {
-      if(DebugMode) Print("Stop too close to entry, skip");
-      return;
-   }
 
    //--- Take profit: opposite liquidity, else Risk:Reward
    double tp;
