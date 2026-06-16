@@ -24,10 +24,10 @@ input int    Deviation        = 30;       // Max slippage (points)
 input string TradeComment      = "Ensemble"; // Order comment
 
 input group "=== Ensemble (how many indicators must agree) ==="
-input int    MinScore         = 4;        // Min net score |bull-bear| to trade (max 12)
-input int    MinAgree         = 6;        // Min number of indicators agreeing (max 12)
+input int    MinScore         = 2;        // Min net score |bull-bear| to trade (max 12)
+input int    MinAgree         = 4;        // Min number of indicators agreeing (max 12)
 input bool   RequireADX       = true;     // Only trade when ADX confirms a trend
-input double ADX_Min          = 20.0;     // Minimum ADX for a "real" trend
+input double ADX_Min          = 15.0;     // Minimum ADX for a "real" trend
 
 input group "=== Risk management ==="
 input double RiskPercent      = 1.0;      // Risk per trade (% of balance)
@@ -37,13 +37,13 @@ input bool   UseTrailing      = true;     // Trail the stop in profit
 input double Trail_ATR_Mult   = 2.0;      // Trailing distance = ATR x this
 input double MaxDailyLossPct  = 5.0;      // Stop new trades after -X% on the day
 input double MaxDrawdownPct   = 20.0;     // HALT all new trades after -X% from peak
-input int    MaxSpreadPoints  = 50;       // Skip entry if spread wider than this
+input int    MaxSpreadPoints  = 500;      // Skip entry if spread wider (POINTS; 3-digit gold spreads are ~150-300)
 input int    MaxPositions     = 1;        // Max simultaneous positions
 
 input group "=== Trading session (BROKER/server time, 24h clock) ==="
-input bool   UseSession       = true;     // Restrict trading hours
-input int    StartHour        = 7;        // Session start hour (server time)
-input int    EndHour          = 21;       // Session end hour (server time)
+input bool   UseSession       = false;    // Restrict trading hours (OFF by default so timezone never blocks)
+input int    StartHour        = 0;        // Session start hour (server time)
+input int    EndHour          = 24;       // Session end hour (server time)
 
 input group "=== Indicator periods ==="
 input int    EmaFast          = 20;
@@ -149,7 +149,8 @@ void OnTick()
 
    // ---- risk gates -------------------------------------------------
    if(UseSession && !SessionOK())       { Comment("Outside trading session."); return; }
-   if(SpreadTooWide())                  { Comment("Spread too wide."); return; }
+   if(SpreadTooWide())                  { Comment(StringFormat("Spread too wide: %d > %d points",
+                                          (int)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD), MaxSpreadPoints)); return; }
    if(DailyLossHit())                   { Comment("Daily loss limit reached."); return; }
    if(CountMyPositions() >= MaxPositions){ Comment("Max positions open."); return; }
 
