@@ -1,0 +1,50 @@
+; GoldPulse EA - Conservative preset for XAUUSD (Gold)
+; Recommended chart timeframe: M15
+; Load via: Strategy Tester / EA Inputs tab -> Load
+; ---------------------------------------------------------------
+InpMagic=770011
+InpComment=GoldPulse
+InpSlippage=30
+; --- Strategy / Trend ---
+InpEntryMode=1
+InpTradeDir=0
+InpFastEMA=21
+InpSlowEMA=50
+InpHTF=16385
+InpHTFema=50
+; --- Momentum Filters ---
+InpADXperiod=14
+InpADXmin=20.0
+InpRSIperiod=14
+InpRSImid=50.0
+InpRSIoverbought=72.0
+InpRSIoversold=28.0
+; --- Volatility / Stops (ATR) ---
+InpATRperiod=14
+InpSLatrMult=2.0
+InpUseTP=true
+InpRiskReward=1.8
+InpMinStopPoints=0
+; --- Position Sizing / Risk ---
+InpLotMode=0
+InpRiskPercent=0.75
+InpFixedLot=0.10
+InpMaxLot=5.0
+; --- Trade Management ---
+InpUseBreakEven=true
+InpBEtriggerR=1.0
+InpBEoffsetPoints=20
+InpUseTrailing=true
+InpTrailATRmult=2.0
+InpTrailStartR=1.0
+; --- Safety Filters ---
+InpMaxSpread=50
+InpMaxPositions=1
+InpMaxTradesPerDay=6
+InpMaxDailyLossPct=4.0
+InpOnePerBar=true
+; --- Session Filter (server time) ---
+InpUseSession=true
+InpStartHour=8
+InpEndHour=21
+InpCloseOutOfSess=false
