@@ -35,6 +35,7 @@ input double SL_ATR_Mult      = 2.0;      // Stop-loss = ATR x this
 input double TP_ATR_Mult      = 3.0;      // Take-profit = ATR x this
 input bool   UseTrailing      = true;     // Trail the stop in profit
 input double Trail_ATR_Mult   = 2.0;      // Trailing distance = ATR x this
+input double TrailStartR       = 1.0;      // Only start trailing after this many R of profit (lets winners run)
 input double MaxDailyLossPct  = 5.0;      // Stop new trades after -X% on the day
 input double MaxDrawdownPct   = 20.0;     // HALT all new trades after -X% from peak
 input int    MaxSpreadPoints  = 500;      // Skip entry if spread wider (POINTS; 3-digit gold spreads are ~150-300)
@@ -368,7 +369,9 @@ void ManageTrailing()
    if(!UseTrailing) return;
    double atr=GetBuf(hATR,0,1);
    if(atr<=0 || atr==EMPTY_VALUE) return;
-   double dist=atr*Trail_ATR_Mult;
+   double dist    = atr*Trail_ATR_Mult;       // trailing distance behind price
+   double oneR    = atr*SL_ATR_Mult;          // approximate 1R (initial risk) in price
+   double trigger = oneR*TrailStartR;         // profit needed before trailing starts
 
    for(int i=PositionsTotal()-1;i>=0;i--){
       ulong tk=PositionGetTicket(i);
@@ -376,18 +379,23 @@ void ManageTrailing()
       if(PositionGetString(POSITION_SYMBOL)!=_Symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC)!=Magic)   continue;
 
-      long   type=PositionGetInteger(POSITION_TYPE);
-      double sl  =PositionGetDouble(POSITION_SL);
-      double tp  =PositionGetDouble(POSITION_TP);
+      long   type =PositionGetInteger(POSITION_TYPE);
+      double sl   =PositionGetDouble(POSITION_SL);
+      double tp   =PositionGetDouble(POSITION_TP);
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
 
       if(type==POSITION_TYPE_BUY){
          double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
-         double newSL=NormalizeDouble(bid-dist,_Digits);
+         if(bid-entry < trigger) continue;                 // let the winner breathe first
+         double newSL=MathMax(entry, bid-dist);            // never trail below breakeven
+         newSL=NormalizeDouble(newSL,_Digits);
          if(newSL>sl+_Point && newSL<bid)
             trade.PositionModify(tk,newSL,tp);
       } else if(type==POSITION_TYPE_SELL){
          double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
-         double newSL=NormalizeDouble(ask+dist,_Digits);
+         if(entry-ask < trigger) continue;
+         double newSL=MathMin(entry, ask+dist);            // never trail above breakeven
+         newSL=NormalizeDouble(newSL,_Digits);
          if((sl==0 || newSL<sl-_Point) && newSL>ask)
             trade.PositionModify(tk,newSL,tp);
       }
