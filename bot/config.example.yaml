@@ -1,0 +1,47 @@
+# ============================================================================
+#  XAUUSD bot configuration
+#  Copy this file to `config.yaml` and edit. Secrets go in `.env` (NOT here).
+# ============================================================================
+
+mode: paper            # "paper" = simulate (use backtest.py) | "mt5" = live/demo via MetaTrader 5
+symbol: XAUUSD         # your broker may call it XAUUSD, GOLD, XAUUSD.m, etc.
+timeframe: M15         # M1 M5 M15 M30 H1 H4 D1
+starting_balance: 10000   # paper/backtest only
+spread_points: 20         # assumed spread for backtests (gold often ~15-30 pts)
+commission_per_lot: 0     # round-turn commission per lot, if your broker charges it
+poll_seconds: 5           # how often to check for a new closed bar (live)
+history_bars: 400         # bars of history fed to the strategies each tick
+dry_run: false            # true = compute & log signals but NEVER send orders (great for testing live)
+
+# ---- Risk management (the bot's safety system) -----------------------------
+risk:
+  risk_per_trade: 0.01     # risk 1% of equity per trade (lower = safer)
+  sl_atr_mult: 2.0         # stop-loss distance = ATR x this
+  tp_atr_mult: 3.0         # take-profit distance = ATR x this  (here 1.5 : 1 reward:risk)
+  trail_atr_mult: 2.0      # trailing-stop distance in ATR
+  use_trailing: true
+  max_daily_loss: 0.05     # stop opening new trades after -5% on the day
+  max_drawdown: 0.20       # HALT all new trades after -20% from the equity peak
+  max_open_positions: 1    # one position at a time (raise carefully)
+  max_spread_points: 50    # skip entries when the live spread is wider than this
+  min_confidence: 0.25     # ignore weak ensemble signals below this conviction
+  sessions:                # allowed UTC hours (London+NY). Use [] for 24h.
+    - [7, 21]
+
+# ---- Strategy ensemble -----------------------------------------------------
+strategy:
+  threshold: 0.25          # net conviction needed to trade (0-1)
+  min_agree: 2             # minimum number of strategies that must agree
+  weights:                 # relative influence of each strategy in the vote
+    trend_following: 1.3
+    momentum: 1.0
+    ichimoku: 1.1
+    breakout: 1.0
+    mean_reversion: 0.8
+    vwap_flow: 0.9
+
+# ---- MetaTrader 5 (live/demo) ----------------------------------------------
+mt5:
+  terminal_path: ""        # optional full path to terminal64.exe; usually leave blank
+  # login / password / server are read from environment variables (.env):
+  #   MT5_LOGIN, MT5_PASSWORD, MT5_SERVER

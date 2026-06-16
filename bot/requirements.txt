@@ -1,0 +1,15 @@
+# Core (all platforms) - needed for backtesting, strategies, indicators
+numpy>=1.24
+pandas>=2.0
+PyYAML>=6.0
+python-dotenv>=1.0
+
+# Testing
+pytest>=7.0
+
+# Live trading via MetaTrader 5 (WINDOWS ONLY).
+# Install separately on a Windows machine / VPS that has the MT5 terminal:
+#   pip install MetaTrader5
+# It is intentionally NOT listed as a hard dependency so the bot installs and
+# backtests cleanly on Linux/Mac.
+# MetaTrader5>=5.0.45
