@@ -20,7 +20,7 @@
 //|  are deliberately explicit so you can tune them. Test on demo.   |
 //+------------------------------------------------------------------+
 #property copyright "SMC CRT Engine"
-#property version   "0.90"
+#property version   "0.92"
 #property description "Smart Money Concepts: CRT timing + Premium/Discount + MSS/BOS + FVG/OB."
 
 #include <Trade/Trade.mqh>
