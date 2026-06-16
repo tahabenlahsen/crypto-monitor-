@@ -24,8 +24,8 @@ input int    Deviation        = 30;       // Max slippage (points)
 input string TradeComment      = "Ensemble"; // Order comment
 
 input group "=== Ensemble (how many indicators must agree) ==="
-input int    MinScore         = 2;        // Min net score |bull-bear| to trade (max 12)
-input int    MinAgree         = 4;        // Min number of indicators agreeing (max 12)
+input int    MinScore         = 3;        // Min net score |bull-bear| to trade (max 12)
+input int    MinAgree         = 5;        // Min number of indicators agreeing (max 12)
 input bool   RequireADX       = true;     // Only trade when ADX confirms a trend
 input double ADX_Min          = 15.0;     // Minimum ADX for a "real" trend
 
