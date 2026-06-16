@@ -45,8 +45,10 @@ input int    InpSwingDepth   = 2;                 // Fractal swing depth (bars e
 input int    InpScanBars     = 300;               // Bars to scan for structure
 input double InpFVGminATR    = 0.10;              // Min FVG size as fraction of ATR
 input int    InpZoneExpiry   = 120;               // Discard zones older than N struct-bars
-input int    InpMaxBarsToMSS = 12;                // Sweep must be confirmed by MSS within N LTF bars
-input int    InpMaxBarsRetest= 24;                // MSS must be retested within N LTF bars
+input bool   InpRequireKeyLevel = false;          // CRT must touch an FVG/OB zone (TRUE=stricter, fewer trades)
+input bool   InpRequireHTFbias  = true;           // Require clear HTF trend (FALSE=allow ranging both ways)
+input int    InpMaxBarsToMSS = 20;                // Sweep must be confirmed by MSS within N LTF bars
+input int    InpMaxBarsRetest= 40;                // MSS must be retested within N LTF bars
 
 input group "=== Risk ==="
 input double InpRiskPercent  = 0.50;              // Risk per trade (% balance)
@@ -192,7 +194,9 @@ void CheckCRTtrigger()
    if(!WindowOHLC(winStart, winEnd, o,h,l,c)) return;
 
    ENUM_BIAS bias = HTFBias();
-   if(bias == BIAS_NONE) { if(InpVerbose) Print("CRT: no HTF bias, skip."); return; }
+   if(InpRequireHTFbias && bias == BIAS_NONE) { if(InpVerbose) Print("CRT: no HTF bias, skip."); return; }
+   bool allowLong  = (bias != BIAS_BEAR);   // bull or (none when bias not required)
+   bool allowShort = (bias != BIAS_BULL);   // bear or (none when bias not required)
 
    double atr = ATR();
    // --- Liquidity sweep: CRT candle wicks beyond a prior swing then closes back ---
@@ -206,10 +210,10 @@ void CheckCRTtrigger()
    double eq    = (rngHi + rngLo) / 2.0;
 
    // BULLISH setup: sweep of SELL-side liquidity (took prior low, closed back above) + bias bull + price in DISCOUNT
-   if(bias==BIAS_BULL)
+   if(allowLong)
      {
       bool sweptSell = (l < sl1 && c > sl1);            // liquidity sweep down
-      bool keyLevel  = TouchedBullKeyLevel(l, atr);     // touched FVG/OB/level
+      bool keyLevel  = (!InpRequireKeyLevel || TouchedBullKeyLevel(l, atr)); // touched FVG/OB
       bool discount  = (c < eq);                        // RCT: only buy in discount
       if(sweptSell && keyLevel && discount)
         {
@@ -219,10 +223,10 @@ void CheckCRTtrigger()
         }
      }
    // BEARISH setup
-   if(bias==BIAS_BEAR)
+   if(allowShort)
      {
       bool sweptBuy = (h > sh1 && c < sh1);
-      bool keyLevel = TouchedBearKeyLevel(h, atr);
+      bool keyLevel = (!InpRequireKeyLevel || TouchedBearKeyLevel(h, atr));
       bool premium  = (c > eq);
       if(sweptBuy && keyLevel && premium)
         {
