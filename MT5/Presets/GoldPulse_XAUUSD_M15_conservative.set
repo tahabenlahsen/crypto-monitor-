@@ -38,11 +38,13 @@ InpUseTrailing=true
 InpTrailATRmult=2.0
 InpTrailStartR=1.0
 ; --- Safety Filters ---
-InpMaxSpread=50
+InpMaxSpread=0
+InpMaxSpreadATRpct=35.0
 InpMaxPositions=1
 InpMaxTradesPerDay=6
 InpMaxDailyLossPct=4.0
 InpOnePerBar=true
+InpVerbose=true
 ; --- Session Filter (server time) ---
 InpUseSession=true
 InpStartHour=8

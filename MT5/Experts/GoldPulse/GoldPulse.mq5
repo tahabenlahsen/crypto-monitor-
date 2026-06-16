@@ -11,7 +11,7 @@
 //|  on YOUR broker's data before risking real money.                 |
 //+------------------------------------------------------------------+
 #property copyright "GoldPulse EA"
-#property version   "1.00"
+#property version   "1.10"
 #property description "XAUUSD Trend + Momentum EA with strict risk management."
 
 #include <Trade/Trade.mqh>
@@ -83,11 +83,13 @@ input double         InpTrailATRmult   = 2.0;          // Trailing distance = AT
 input double         InpTrailStartR     = 1.0;         // Start trailing at this R
 
 input group "=== Safety Filters ==="
-input int            InpMaxSpread      = 50;           // Max spread (points), 0 = ignore
-input int            InpMaxPositions   = 1;            // Max simultaneous EA positions
-input int            InpMaxTradesPerDay= 6;            // Max new trades per day (0 = no limit)
-input double         InpMaxDailyLossPct= 4.0;          // Stop for the day at this loss (% bal)
-input bool           InpOnePerBar      = true;         // Only one entry per bar
+input int            InpMaxSpread       = 0;           // Max spread (points), 0 = OFF (digit-dependent!)
+input double         InpMaxSpreadATRpct = 35.0;        // Max spread as % of ATR (0 = OFF, broker-agnostic)
+input int            InpMaxPositions    = 1;           // Max simultaneous EA positions
+input int            InpMaxTradesPerDay = 6;           // Max new trades per day (0 = no limit)
+input double         InpMaxDailyLossPct = 4.0;         // Stop for the day at this loss (% bal)
+input bool           InpOnePerBar       = true;        // Only one entry per bar
+input bool           InpVerbose         = true;        // Print diagnostics to Journal
 
 input group "=== Session Filter (server time) ==="
 input bool           InpUseSession     = true;         // Restrict trading hours
@@ -117,6 +119,10 @@ bool     g_dayBlocked   = false; // daily loss limit hit
 
 double   g_point  = 0.0;
 int      g_digits = 0;
+
+// --- diagnostic counters (why are we / are we not trading) ---
+long g_barsEval=0, g_blkDaily=0, g_blkSession=0, g_blkSpread=0, g_blkMaxPos=0;
+long g_blkMaxTr=0, g_blkOnePerBar=0, g_noSignal=0, g_blkDir=0, g_tradesTotal=0;
 
 //==================================================================//
 //                            INIT                                  //
@@ -159,6 +165,20 @@ int OnInit()
 
    PrintFormat("GoldPulse initialized on %s %s | point=%.*f digits=%d",
                _Symbol, EnumToString((ENUM_TIMEFRAMES)Period()), g_digits, g_point, g_digits);
+
+   if(InpVerbose)
+     {
+      PrintFormat("SYMBOL SPEC %s: digits=%d  point=%.*f  spread(now)=%d pts",
+                  _Symbol, g_digits, g_digits, g_point,
+                  (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD));
+      PrintFormat("  tickValue=%.5f tickSize=%.5f volMin=%.2f volStep=%.2f volMax=%.2f stopsLevel=%d",
+                  SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE),
+                  SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE),
+                  SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN),
+                  SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP),
+                  SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX),
+                  (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL));
+     }
    return(INIT_SUCCEEDED);
   }
 
@@ -174,6 +194,23 @@ void OnDeinit(const int reason)
    if(hRSI    !=INVALID_HANDLE) IndicatorRelease(hRSI);
    if(hATR    !=INVALID_HANDLE) IndicatorRelease(hATR);
    Comment("");
+
+   if(InpVerbose)
+     {
+      Print("================ GoldPulse DIAGNOSTIC SUMMARY ================");
+      PrintFormat("Bars evaluated (new bars): %I64d", g_barsEval);
+      PrintFormat("Blocked -> spread:%I64d  session:%I64d  daily:%I64d  maxPos:%I64d  maxTrades:%I64d  onePerBar:%I64d  direction:%I64d",
+                  g_blkSpread, g_blkSession, g_blkDaily, g_blkMaxPos, g_blkMaxTr, g_blkOnePerBar, g_blkDir);
+      PrintFormat("No-signal bars: %I64d   |   TRADES OPENED: %I64d", g_noSignal, g_tradesTotal);
+
+      if(g_barsEval>0 && g_blkSpread >= g_barsEval)
+         Print(">>> CAUSE: the SPREAD filter blocked EVERY bar. Set InpMaxSpread=0 and/or raise InpMaxSpreadATRpct.");
+      else if(g_barsEval>0 && g_blkSession >= g_barsEval)
+         Print(">>> CAUSE: the SESSION filter blocked every bar. Check broker server hours / set InpUseSession=false.");
+      else if(g_tradesTotal==0 && g_noSignal>0 && g_noSignal >= g_barsEval/2)
+         Print(">>> CAUSE: no signals met all conditions. Loosen InpADXmin / try InpEntryMode=Cross / longer test period.");
+      Print("=============================================================");
+     }
   }
 
 //==================================================================//
@@ -204,20 +241,21 @@ void OnTick()
    if(!newBar)
       return;
 
-   // --- Entry gating ---
-   if(g_dayBlocked)                      return;
-   if(InpUseSession && !InSession())     return;
-   if(!SpreadOK())                       return;
-   if(CountOurPositions() >= InpMaxPositions) return;
-   if(InpMaxTradesPerDay>0 && g_tradesToday >= InpMaxTradesPerDay) return;
-   if(InpOnePerBar && g_lastTradeBar==curBar) return;
+   g_barsEval++;
+
+   // --- Entry gating (with diagnostic counters) ---
+   if(g_dayBlocked)                                   { g_blkDaily++;     return; }
+   if(InpUseSession && !InSession())                  { g_blkSession++;   return; }
+   if(!SpreadOK())                                    { g_blkSpread++;    return; }
+   if(CountOurPositions() >= InpMaxPositions)         { g_blkMaxPos++;    return; }
+   if(InpMaxTradesPerDay>0 && g_tradesToday >= InpMaxTradesPerDay) { g_blkMaxTr++; return; }
+   if(InpOnePerBar && g_lastTradeBar==curBar)         { g_blkOnePerBar++; return; }
 
    int signal = GetSignal();   // +1 buy, -1 sell, 0 none
-   if(signal == 0)
-      return;
+   if(signal == 0)                                    { g_noSignal++;     return; }
 
-   if(signal>0 && InpTradeDir==DIR_SHORT) return;
-   if(signal<0 && InpTradeDir==DIR_LONG)  return;
+   if(signal>0 && InpTradeDir==DIR_SHORT)             { g_blkDir++;       return; }
+   if(signal<0 && InpTradeDir==DIR_LONG)              { g_blkDir++;       return; }
 
    OpenTrade(signal);
   }
@@ -334,6 +372,7 @@ void OpenTrade(int signal)
    if(ok)
      {
       g_tradesToday++;
+      g_tradesTotal++;
       g_lastTradeBar = iTime(_Symbol, PERIOD_CURRENT, 0);
       PrintFormat("OPEN %s %.2f lots @~%.*f SL=%.*f TP=%.*f (ATR=%.*f, risk=%.2f%%)",
                   (signal>0?"BUY":"SELL"), lots, g_digits, price, g_digits, sl,
@@ -546,12 +585,19 @@ bool InSession()
 
 bool SpreadOK()
   {
-   if(InpMaxSpread <= 0) return(true);
-   long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   if(spread > InpMaxSpread)
-     {
-      // too noisy to print every tick; only on new-bar caller context
+   long   spreadPts   = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   double spreadPrice = (double)spreadPts * g_point;
+
+   // (1) Optional fixed points cap (digit-dependent — off by default).
+   if(InpMaxSpread > 0 && spreadPts > InpMaxSpread)
       return(false);
+
+   // (2) Broker-agnostic cap: spread as a fraction of ATR (works for any digits).
+   if(InpMaxSpreadATRpct > 0)
+     {
+      double atr = GetATR();
+      if(atr > 0 && spreadPrice > atr * InpMaxSpreadATRpct/100.0)
+         return(false);
      }
    return(true);
   }
@@ -624,16 +670,16 @@ void ShowDashboard()
       "Equity:        %.2f %s\n"
       "Day P/L:       %.2f (start %.2f)\n"
       "Open (EA):     %d / %d\n"
-      "Trades today:  %d%s\n"
-      "Spread:        %d pts (max %d)\n"
+      "Trades (today/total): %d / %I64d\n"
+      "Spread:        %d pts  (filter: %s)\n"
       "Session:       %s\n"
       "Status:        %s",
       _Symbol, EnumToString((ENUM_TIMEFRAMES)Period()),
       equity, AccountInfoString(ACCOUNT_CURRENCY),
       dayPnL, g_dayStartEquity,
       CountOurPositions(), InpMaxPositions,
-      g_tradesToday, (InpMaxTradesPerDay>0?StringFormat("/%d",InpMaxTradesPerDay):""),
-      (int)spread, InpMaxSpread,
+      g_tradesToday, g_tradesTotal,
+      (int)spread, (SpreadOK() ? "OK" : "TOO WIDE"),
       ((!InpUseSession || InSession()) ? "OPEN" : "CLOSED"),
       (g_dayBlocked ? "DAILY LOSS LIMIT - paused" : "active")
    );
