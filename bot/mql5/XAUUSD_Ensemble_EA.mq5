@@ -132,6 +132,23 @@ void OnDeinit(const int reason)
    IndicatorRelease(hATR);     IndicatorRelease(hST_ATR);
 }
 
+//===================== OPTIMIZATION CRITERION ======================
+// Used by the Strategy Tester when you pick "Custom max" as the criterion.
+// Deliberately rewards PROFIT and low DRAWDOWN - never win rate - so the
+// optimizer cannot cheat with the high-win-rate / huge-stop trap. It also
+// requires a minimum number of trades so a lucky 2-trade run can't win.
+double OnTester()
+{
+   double trades = TesterStatistics(STAT_TRADES);
+   double profit = TesterStatistics(STAT_PROFIT);
+   double pf     = TesterStatistics(STAT_PROFIT_FACTOR);
+   double ddPct  = TesterStatistics(STAT_EQUITY_DDREL_PERCENT);
+
+   if(trades < 30 || profit <= 0.0) return 0.0;   // discard losers & tiny samples
+   double denom = (ddPct > 0.0 ? ddPct : 1.0);
+   return (profit / denom) * pf;                   // profit, scaled by PF, penalised by drawdown
+}
+
 //============================ TICK =================================
 void OnTick()
 {
