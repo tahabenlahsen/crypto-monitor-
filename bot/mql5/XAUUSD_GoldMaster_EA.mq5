@@ -44,7 +44,7 @@ input group "=== AGGRESSIVE position limits (with a REAL risk cap) ==="
 input int             MaxConcurrent = 10;           // Max simultaneous positions
 input double          MaxTotalRisk  = 20.0;         // *** REAL *** cap: total open risk % of balance
 input int             MaxDailyTrades= 50;           // Max new trades per day
-input int             MinBarsBetween= 1;            // Min new bars between entries (0 = every bar)
+input int             MinBarsBetween= 0;            // Min new bars between entries (0 = every bar; HIGH FREQUENCY)
 
 input group "=== Risk per trade & exits ==="
 input double          RiskPerTrade  = 1.0;          // Risk per trade (% of balance)
@@ -66,8 +66,8 @@ input int             StartHour     = 0;            // Session start hour
 input int             EndHour       = 24;           // Session end hour
 
 input group "=== ENGINE A: ensemble ==="
-input int             EnsMinScore   = 4;            // Min |net vote| of the 12 indicators
-input int             EnsMinAgree   = 6;            // Min indicators agreeing
+input int             EnsMinScore   = 2;            // Min |net vote| of the 12 indicators (lowered = trades more)
+input int             EnsMinAgree   = 4;            // Min indicators agreeing (lowered = trades more)
 
 input group "=== ENGINE B: regime ==="
 input bool            UseHTF        = true;         // Require higher-timeframe alignment
@@ -81,7 +81,7 @@ input bool            UseDivergence = true;         // RSI/price pivot divergenc
 input int             PivotLeft     = 5;            // Pivot left bars
 input int             PivotRight    = 5;            // Pivot right bars
 input int             DivLookback   = 250;          // Bars scanned for pivots
-input int             RegMinScore   = 6;            // Min confluence score (0-10)
+input int             RegMinScore   = 3;            // Min confluence score (0-10) (lowered = trades more)
 input bool            UseDXY        = true;         // Gate by US Dollar Index (inverse)
 input string          DXYSymbol     = "DXY";        // DXY symbol on YOUR broker
 input bool            UseYields     = true;         // Gate by US10Y yield (inverse)
@@ -92,7 +92,7 @@ input bool            EnableEMA     = true;         // EMA 9/21 crossover
 input bool            EnableRSIs    = true;         // RSI momentum
 input bool            EnableBB      = true;         // Bollinger bands
 input bool            EnableMomentum= true;         // Intraday momentum
-input double          MinQuality    = 65.0;         // Min signal quality (0-100)
+input double          MinQuality    = 55.0;         // Min signal quality (0-100) (lowered = trades more)
 input double          MomVolMult    = 1.5;          // Momentum min volatility multiplier
 
 input group "=== Indicator periods (shared) ==="
