@@ -509,69 +509,68 @@ bool LastTwoPivots(const double &arr[], int total, int L, int R, bool wantLow,
 }
 
 //====================== ENGINE C: QUALITY ==========================
+// NOTE: MQL5 passes structs by REFERENCE only, so each strategy fills an
+// output struct (&r) instead of returning one by value.
 int EngineQuality()
 {
    SignalData best; best.quality=0; best.direction=0;
    double pDI=GetBuf(hADX,1,1), mDI=GetBuf(hADX,2,1);
    double adx=GetBuf(hADX,0,1);
+   SignalData s;
 
-   if(EnableEMA)      ConsiderSignal(best, QualEMA());
-   if(EnableRSIs)     ConsiderSignal(best, QualRSI(pDI,mDI));
-   if(EnableBB)       ConsiderSignal(best, QualBB(adx));
-   if(EnableMomentum) ConsiderSignal(best, QualMomentum(pDI,mDI));
+   if(EnableEMA)      { QualEMA(s);              ConsiderSignal(best,s); }
+   if(EnableRSIs)     { QualRSI(s,pDI,mDI);      ConsiderSignal(best,s); }
+   if(EnableBB)       { QualBB(s,adx);           ConsiderSignal(best,s); }
+   if(EnableMomentum) { QualMomentum(s,pDI,mDI); ConsiderSignal(best,s); }
 
    if(best.direction!=0 && best.quality>=MinQuality) return best.direction;
    return 0;
 }
 
-void ConsiderSignal(SignalData &best, SignalData s)
+void ConsiderSignal(SignalData &best, SignalData &s)
 {
    if(s.direction!=0 && s.quality>best.quality){ best.quality=s.quality; best.direction=s.direction; }
 }
 
-SignalData QualEMA()
+void QualEMA(SignalData &r)
 {
-   SignalData r; r.quality=0; r.direction=0;
+   r.quality=0; r.direction=0;
    double f1=GetBuf(hEmaQF,0,1), f2=GetBuf(hEmaQF,0,2);
    double s1=GetBuf(hEmaQS,0,1), s2=GetBuf(hEmaQS,0,2);
-   if(Bad(f1)||Bad(f2)||Bad(s1)||Bad(s2)) return r;
+   if(Bad(f1)||Bad(f2)||Bad(s1)||Bad(s2)) return;
    if(f2<=s2 && f1>s1){ r.direction=1;  r.quality=72.0; if((f1-f2)/_Point>20) r.quality+=8.0; }
    else if(f2>=s2 && f1<s1){ r.direction=-1; r.quality=72.0; if((f2-f1)/_Point>20) r.quality+=8.0; }
-   return r;
 }
 
-SignalData QualRSI(double pDI, double mDI)
+void QualRSI(SignalData &r, double pDI, double mDI)
 {
-   SignalData r; r.quality=0; r.direction=0;
+   r.quality=0; r.direction=0;
    double r1=GetBuf(hRSI,0,1), r2=GetBuf(hRSI,0,2);
-   if(Bad(r1)||Bad(r2)) return r;
+   if(Bad(r1)||Bad(r2)) return;
    if(r2<RsiOS && r1>RsiOS && r1<50){ r.direction=1; r.quality=75.0; if(!Bad(pDI)&&!Bad(mDI)&&pDI>mDI) r.quality+=10.0; }
    else if(r2>RsiOB && r1<RsiOB && r1>50){ r.direction=-1; r.quality=75.0; if(!Bad(pDI)&&!Bad(mDI)&&mDI>pDI) r.quality+=10.0; }
-   return r;
 }
 
-SignalData QualBB(double adx)
+void QualBB(SignalData &r, double adx)
 {
-   SignalData r; r.quality=0; r.direction=0;
+   r.quality=0; r.direction=0;
    double c1=iClose(_Symbol,_Period,1);
    double up=GetBuf(hBB,1,1), dn=GetBuf(hBB,2,1);   // 1=upper, 2=lower (correct order)
-   if(Bad(up)||Bad(dn)) return r;
+   if(Bad(up)||Bad(dn)) return;
    if(c1<=dn){ r.direction=1;  r.quality=68.0; if(!Bad(adx)&&adx<25) r.quality+=10.0; }
    else if(c1>=up){ r.direction=-1; r.quality=68.0; if(!Bad(adx)&&adx<25) r.quality+=10.0; }
-   return r;
 }
 
-SignalData QualMomentum(double pDI, double mDI)
+void QualMomentum(SignalData &r, double pDI, double mDI)
 {
-   SignalData r; r.quality=0; r.direction=0;
+   r.quality=0; r.direction=0;
    double atr=GetBuf(hATR,0,1);
-   if(Bad(atr)) return r;
-   if(atr/_Point < 200*MomVolMult) return r;
+   if(Bad(atr)) return;
+   if(atr/_Point < 200*MomVolMult) return;
    double pDI2=GetBuf(hADX,1,2), mDI2=GetBuf(hADX,2,2);
-   if(Bad(pDI)||Bad(mDI)||Bad(pDI2)||Bad(mDI2)) return r;
+   if(Bad(pDI)||Bad(mDI)||Bad(pDI2)||Bad(mDI2)) return;
    if(pDI>mDI && pDI>25 && pDI>pDI2){ r.direction=1;  r.quality=65.0; if(pDI>30) r.quality+=10.0; }
    else if(mDI>pDI && mDI>25 && mDI>mDI2){ r.direction=-1; r.quality=65.0; if(mDI>30) r.quality+=10.0; }
-   return r;
 }
 
 //====================== TRADE EXECUTION ============================
