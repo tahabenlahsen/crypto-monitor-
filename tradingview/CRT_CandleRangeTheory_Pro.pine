@@ -1,0 +1,125 @@
+//@version=6
+// =============================================================================
+//  CRT PRO — Candle Range Theory (full methodology)   Gold / XAUUSD or any pair
+//
+//  Core 3-candle model (on a chosen HIGHER timeframe):
+//    1) RANGE candle  -> high/low define the dealing range (+ 50% equilibrium)
+//    2) MANIPULATION  -> next candle sweeps the range HIGH or LOW and CLOSES
+//                        back inside  (a liquidity grab)
+//    3) DISTRIBUTION  -> price is expected to reverse to the opposite side
+//
+//  ADDED on top of the basic model:
+//    • KEY-LEVEL filter  -> only count sweeps that grab PDH/PDL/PWH/PWL liquidity
+//    • SESSION filter    -> only inside London / New York killzones
+//    • HTF range + 50%   -> range comes from a higher timeframe; equilibrium line
+//    • TRADE PLAN        -> auto entry (50% of sweep), stop (beyond wick), target
+//                           (opposite side of range) with the R:R printed
+//
+//  Non-repainting (uses CLOSED higher-timeframe candles, lookahead off).
+//  It DRAWS and ALERTS only — it does not trade. Educational tool, not advice.
+// =============================================================================
+indicator("CRT Pro - Candle Range Theory", shorttitle="CRT Pro", overlay=true, max_boxes_count=200, max_lines_count=500, max_labels_count=500)
+
+// ------------------------------- Inputs -------------------------------------
+crtTF         = input.timeframe("240", "CRT range timeframe", group="Core")
+requireInside = input.bool(true,  "Sweep must close back INSIDE the range", group="Core")
+extendBars    = input.int(4,      "Extend drawings (range bars)", minval=0, group="Core")
+
+requireKeyLevel = input.bool(true, "Only sweeps that grab a key level (PDH/PDL/PWH/PWL)", group="Key levels & liquidity")
+showKeyLevels   = input.bool(true, "Show key levels", group="Key levels & liquidity")
+
+useSessions = input.bool(true, "Only take setups inside killzones", group="Sessions")
+sessTz      = input.string("GMT", "Killzone timezone", options=["GMT","America/New_York","Europe/London"], group="Sessions")
+lonStart    = input.int(7,  "London KZ start hour", minval=0, maxval=23, group="Sessions")
+lonEnd      = input.int(10, "London KZ end hour",   minval=0, maxval=24, group="Sessions")
+nyStart     = input.int(12, "New York KZ start hour", minval=0, maxval=23, group="Sessions")
+nyEnd       = input.int(16, "New York KZ end hour",   minval=0, maxval=24, group="Sessions")
+
+showTradeLevels = input.bool(true, "Draw entry / SL / TP", group="Trade plan")
+slBuffer        = input.float(0.0, "SL buffer (price beyond the wick)", step=0.1, group="Trade plan")
+
+useTrend = input.bool(false, "EMA trend filter", group="Trend")
+trendLen = input.int(50,     "Trend EMA length", minval=2, group="Trend")
+
+showBox    = input.bool(true, "Show range box + equilibrium", group="Visuals")
+showArrows = input.bool(true, "Show BUY/SELL labels", group="Visuals")
+buyCol     = input.color(color.lime, "Bullish", group="Visuals")
+sellCol    = input.color(color.red,  "Bearish", group="Visuals")
+boxCol     = input.color(color.gray, "Box / equilibrium", group="Visuals")
+
+// --------------------- Higher-timeframe data (non-repaint) ------------------
+// range candle = 2 HTF bars back, manipulation candle = 1 HTF bar back
+[rHigh, rLow, mHigh, mLow, mClose, rTime, mTime, htfTime] = request.security(syminfo.tickerid, crtTF, [high[2], low[2], high[1], low[1], close[1], time[2], time[1], time], lookahead=barmerge.lookahead_off)
+emaVal = request.security(syminfo.tickerid, crtTF, ta.ema(close, trendLen), lookahead=barmerge.lookahead_off)
+
+// --------------------------- Key levels (liquidity) -------------------------
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
+pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_off)
+pwh = request.security(syminfo.tickerid, "W", high[1], lookahead=barmerge.lookahead_off)
+pwl = request.security(syminfo.tickerid, "W", low[1],  lookahead=barmerge.lookahead_off)
+
+newHTF = htfTime != htfTime[1]
+
+// ------------------------------- CRT logic ----------------------------------
+sweptHigh = mHigh > rHigh
+sweptLow  = mLow  < rLow
+bool rawBear = sweptHigh and mClose < rHigh and (not requireInside or mClose > rLow)
+bool rawBull = sweptLow  and mClose > rLow  and (not requireInside or mClose < rHigh)
+
+// swept both sides -> keep the bigger liquidity grab
+bothSwept = rawBear and rawBull
+rawBull := bothSwept and (mHigh - rHigh) >= (rLow - mLow) ? false : rawBull
+rawBear := bothSwept and (mHigh - rHigh) <  (rLow - mLow) ? false : rawBear
+
+// key-level filter: the wick must take PDL/PWL (for buys) or PDH/PWH (for sells)
+keyLowGrab  = (mLow  <= pdl and mClose > pdl) or (mLow  <= pwl and mClose > pwl)
+keyHighGrab = (mHigh >= pdh and mClose < pdh) or (mHigh >= pwh and mClose < pwh)
+rawBull := requireKeyLevel ? (rawBull and keyLowGrab)  : rawBull
+rawBear := requireKeyLevel ? (rawBear and keyHighGrab) : rawBear
+
+// session / killzone filter (based on the manipulation candle time)
+mHour = hour(mTime, sessTz)
+inKZ  = (mHour >= lonStart and mHour < lonEnd) or (mHour >= nyStart and mHour < nyEnd)
+rawBull := useSessions ? (rawBull and inKZ) : rawBull
+rawBear := useSessions ? (rawBear and inKZ) : rawBear
+
+// optional EMA trend filter
+rawBull := useTrend ? (rawBull and mClose > emaVal) : rawBull
+rawBear := useTrend ? (rawBear and mClose < emaVal) : rawBear
+
+bullSignal = newHTF and rawBull
+bearSignal = newHTF and rawBear
+
+// ------------------------------- Drawing ------------------------------------
+tfSec = timeframe.in_seconds(crtTF)
+if bullSignal or bearSignal
+    col       = bullSignal ? buyCol : sellCol
+    eq        = (rHigh + rLow) / 2.0                       // equilibrium (premium/discount divider)
+    entry     = (mHigh + mLow) / 2.0                       // 50% of the sweep candle
+    sl        = bullSignal ? (mLow - slBuffer) : (mHigh + slBuffer)
+    tp1       = bullSignal ? rHigh : rLow                  // opposite side of the range
+    risk      = math.abs(entry - sl)
+    rr1       = risk > 0 ? math.abs(tp1 - entry) / risk : 0.0
+    rightTime = htfTime + (extendBars + 1) * tfSec * 1000
+
+    if showBox
+        box.new(rTime, rHigh, rightTime, rLow, xloc=xloc.bar_time, border_color=boxCol, bgcolor=color.new(boxCol, 90), border_style=line.style_dotted)
+        line.new(rTime, eq, rightTime, eq, xloc=xloc.bar_time, color=color.new(boxCol, 0), style=line.style_dotted)
+    if showArrows
+        label.new(mTime, bullSignal ? mLow : mHigh, bullSignal ? "CRT BUY" : "CRT SELL", xloc=xloc.bar_time, style=bullSignal ? label.style_label_up : label.style_label_down, color=col, textcolor=color.white, size=size.small)
+    if showTradeLevels
+        line.new(mTime, entry, rightTime, entry, xloc=xloc.bar_time, color=color.new(color.blue, 0),  width=1)
+        line.new(mTime, sl,    rightTime, sl,    xloc=xloc.bar_time, color=color.new(color.red, 0),    width=1)
+        line.new(mTime, tp1,   rightTime, tp1,   xloc=xloc.bar_time, color=color.new(color.green, 0),  width=1)
+        label.new(rightTime, entry, (bullSignal ? "BUY" : "SELL") + "  E:" + str.tostring(entry, format.mintick) + "  SL:" + str.tostring(sl, format.mintick) + "  TP:" + str.tostring(tp1, format.mintick) + "  RR:" + str.tostring(rr1, "#.0"), xloc=xloc.bar_time, style=label.style_label_left, color=col, textcolor=color.white, size=size.small)
+
+// ------------------------------ Key-level plots -----------------------------
+plot(showKeyLevels ? pdh : na, "PDH", color=color.new(color.teal,   0), style=plot.style_stepline)
+plot(showKeyLevels ? pdl : na, "PDL", color=color.new(color.teal,   0), style=plot.style_stepline)
+plot(showKeyLevels ? pwh : na, "PWH", color=color.new(color.orange, 0), style=plot.style_stepline)
+plot(showKeyLevels ? pwl : na, "PWL", color=color.new(color.orange, 0), style=plot.style_stepline)
+plot(useTrend ? emaVal : na,   "Trend EMA", color=color.new(color.purple, 0))
+
+// -------------------------------- Alerts ------------------------------------
+alertcondition(bullSignal, "CRT Pro Buy",  "CRT BUY — sweep + key level, target range high")
+alertcondition(bearSignal, "CRT Pro Sell", "CRT SELL — sweep + key level, target range low")
