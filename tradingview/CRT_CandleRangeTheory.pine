@@ -1,0 +1,81 @@
+//@version=6
+// =============================================================================
+//  CRT — Candle Range Theory   (built for Gold / XAUUSD, works on any symbol)
+//
+//  The 3-candle model:
+//    1) RANGE candle   -> its high & low define "the range"
+//    2) MANIPULATION   -> the next candle sweeps the range HIGH or LOW,
+//                         then CLOSES back inside the range (liquidity grab)
+//    3) DISTRIBUTION   -> price is expected to reverse to the opposite side
+//
+//    Swept the HIGH + closed back inside  ->  SELL  (target = range low)
+//    Swept the LOW  + closed back inside  ->  BUY   (target = range high)
+//
+//  Put your chart on the timeframe you want CRT on (e.g. H4 or Daily).
+//  This indicator only DRAWS and ALERTS — it does not trade, you decide.
+//  Signals use only CLOSED candles, so they do NOT repaint.
+//  Educational tool, not financial advice.
+// =============================================================================
+indicator("CRT - Candle Range Theory", shorttitle="CRT", overlay=true, max_boxes_count=200, max_lines_count=200, max_labels_count=300)
+
+// ----------------------------- Inputs ---------------------------------------
+requireInside = input.bool(true,  "Sweep must close back INSIDE the range")
+useTrend      = input.bool(false, "Use EMA trend filter")
+trendLen      = input.int(50,     "Trend EMA length", minval=2)
+extendBars    = input.int(3,      "Extend box / target (bars)", minval=0)
+showBox       = input.bool(true,  "Show range box",       group="Visuals")
+showTarget    = input.bool(true,  "Show target line",     group="Visuals")
+showArrows    = input.bool(true,  "Show BUY/SELL arrows", group="Visuals")
+buyCol        = input.color(color.lime, "Bullish color", group="Visuals")
+sellCol       = input.color(color.red,  "Bearish color", group="Visuals")
+boxCol        = input.color(color.gray, "Box color",     group="Visuals")
+
+emaVal = ta.ema(close, trendLen)
+
+// ------------------- CRT logic (closed candles only) ------------------------
+// range candle = 2 bars back, manipulation candle = 1 bar back
+rHigh  = high[2]
+rLow   = low[2]
+mHigh  = high[1]
+mLow   = low[1]
+mClose = close[1]
+
+sweptHigh = mHigh > rHigh
+sweptLow  = mLow  < rLow
+
+bool bearish = sweptHigh and mClose < rHigh
+bool bullish = sweptLow  and mClose > rLow
+if requireInside
+    bearish := bearish and mClose > rLow      // closed fully inside the range
+    bullish := bullish and mClose < rHigh
+
+// if a candle swept BOTH sides, keep the bigger liquidity grab
+if bearish and bullish
+    if (mHigh - rHigh) >= (rLow - mLow)
+        bullish := false
+    else
+        bearish := false
+
+// optional higher-timeframe-style EMA trend filter
+if useTrend
+    bullish := bullish and mClose > emaVal
+    bearish := bearish and mClose < emaVal
+
+// ------------------------------ Draw ----------------------------------------
+if bullish or bearish
+    col    = bullish ? buyCol : sellCol
+    target = bullish ? rHigh : rLow
+    rightX = bar_index + extendBars
+    if showBox
+        box.new(bar_index[2], rHigh, rightX, rLow, border_color=boxCol, bgcolor=color.new(boxCol, 90), border_style=line.style_dotted)
+    if showTarget
+        line.new(bar_index[1], target, rightX, target, color=col, style=line.style_dashed, width=2)
+
+plotshape(showArrows and bullish, title="CRT Buy",  style=shape.triangleup,   location=location.belowbar, color=buyCol,  textcolor=buyCol,  size=size.small, offset=-1, text="CRT BUY")
+plotshape(showArrows and bearish, title="CRT Sell", style=shape.triangledown, location=location.abovebar, color=sellCol, textcolor=sellCol, size=size.small, offset=-1, text="CRT SELL")
+
+plot(useTrend ? emaVal : na, "Trend EMA", color=color.new(color.orange, 0))
+
+// ------------------------------ Alerts --------------------------------------
+alertcondition(bullish, "CRT Buy",  "CRT BUY setup — sweep of range low, target range high")
+alertcondition(bearish, "CRT Sell", "CRT SELL setup — sweep of range high, target range low")
